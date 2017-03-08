@@ -14,26 +14,20 @@
 #include "PID.h"
 
 /*Constructor (...)*********************************************************
- *    The parameters specified here are those for for which we can't set up 
+ *    The parameters specified here are those for for which we can't set up
  *    reliable defaults, so we need to have the user set them.
  ***************************************************************************/
-PID::PID(double* Input, double* Output, double* Setpoint, double Kp, double Ki,
-		double Kd, int ControllerDirection) {
+PID::PID(double& input, double& output, double& setpoint, double p, double i, double d) :
+    m_input(input),
+    m_output(output),
+    m_setpoint(setpoint),
+    m_isEnabled(false)
+{
+    PID::SetOutputLimits(0, 255);
+    PID::SetTunings(p, i, d);
 
-	myOutput = Output;
-	myInput = Input;
-	mySetpoint = Setpoint;
-	inAuto = false;
-
-	PID::SetOutputLimits(0, 255);		//default output limit corresponds to
-	//the arduino pwm limits
-
-	SampleTime = 100;			//default Controller Sample Time is 0.1 seconds
-
-	PID::SetControllerDirection(ControllerDirection);
-	PID::SetTunings(Kp, Ki, Kd);
-
-	lastTime = millis() - SampleTime;
+    m_sampleTime = 100;
+    m_prevTime = millis() - m_sampleTime;
 }
 
 /* Compute() **********************************************************************
@@ -42,74 +36,117 @@ PID::PID(double* Input, double* Output, double* Setpoint, double Kp, double Ki,
  *   pid Output needs to be computed.  returns true when the output is computed,
  *   false when nothing has been done.
  **********************************************************************************/
-bool PID::Compute() {
-	if (!inAuto)
-		return false;
-	unsigned long now = millis();
-	unsigned long timeChange = (now - lastTime);
-	if (timeChange >= SampleTime) {
-		/*Compute all the working error variables*/
-		double input = *myInput;
-		double error = *mySetpoint - input;
-		ITerm += (ki * error);
-		if (ITerm > outMax)
-			ITerm = outMax;
-		else if (ITerm < outMin)
-			ITerm = outMin;
-		double dInput = (input - lastInput);
+bool PID::Compute()
+{
+    if (!m_isEnabled) {
+        return false;
+    }
 
-		/*Compute PID Output*/
-		double output = kp * error + ITerm - kd * dInput;
+    unsigned long now = millis();
 
-		if (output > outMax)
-			output = outMax;
-		else if (output < outMin)
-			output = outMin;
-		*myOutput = output;
+    if (now - m_prevTime >= m_sampleTime) {
+        Clamp(m_input, m_inMin, m_inMax);
 
-		/*Remember some variables for next time*/
-		lastInput = input;
-		lastTime = now;
-		return true;
-	} else
-		return false;
+        double error = m_setpoint - m_input;
+
+        m_iTerm += m_i * error;
+        Clamp(m_iTerm, m_outMin, m_outMax);
+
+        double output = m_p * error + m_iTerm - m_d * (m_input - m_prevInput);
+        Clamp(output, m_outMin, m_outMax);
+        m_output = output;
+
+        m_prevInput = m_input;
+        m_prevTime = now;
+
+        return true;
+    } else {
+        return false;
+    }
 }
 
 /* SetTunings(...)*************************************************************
- * This function allows the controller's dynamic performance to be adjusted. 
+ * This function allows the controller's dynamic performance to be adjusted.
  * it's called automatically from the constructor, but tunings can also
  * be adjusted on the fly during normal operation
  ******************************************************************************/
-void PID::SetTunings(double Kp, double Ki, double Kd) {
-	if (Kp < 0 || Ki < 0 || Kd < 0)
-		return;
+void PID::Enable()
+{
+    if (!IsEnabled()) {
+        m_isEnabled = true;
+        Initialize();
+    }
+}
 
-	dispKp = Kp;
-	dispKi = Ki;
-	dispKd = Kd;
+void PID::Disable()
+{
+    m_isEnabled = false;
+}
 
-	double SampleTimeInSec = ((double) SampleTime) / 1000;
-	kp = Kp;
-	ki = Ki * SampleTimeInSec;
-	kd = Kd / SampleTimeInSec;
+bool PID::IsEnabled() const
+{
+    return m_isEnabled;
+}
 
-	if (controllerDirection == REVERSE) {
-		kp = (0 - kp);
-		ki = (0 - ki);
-		kd = (0 - kd);
-	}
+void PID::SetTunings(double p, double i, double d)
+{
+    if (p < 0 || i < 0 || d < 0) {
+        return;
+    }
+
+    m_dispP = p;
+    m_dispI = i;
+    m_dispD = d;
+
+    double time = (double) m_sampleTime / 1000;
+    m_p = p;
+    m_i = i * time;
+    m_d = d / time;
 }
 
 /* SetSampleTime(...) *********************************************************
  * sets the period, in Milliseconds, at which the calculation is performed	
  ******************************************************************************/
-void PID::SetSampleTime(int NewSampleTime) {
-	if (NewSampleTime > 0) {
-		double ratio = (double) NewSampleTime / (double) SampleTime;
-		ki *= ratio;
-		kd /= ratio;
-		SampleTime = (unsigned long) NewSampleTime;
-	}
+void PID::SetInputLimits(double min, double max)
+{
+    if (min >= max) {
+        return;
+    }
+
+    m_inMin = min;
+    m_inMax = max;
+
+    if (m_isEnabled) {
+        Clamp(m_input, m_inMin, m_inMax);
+    }
+}
+
+void PID::SetOutputLimits(double min, double max)
+{
+    if (min >= max) {
+        return;
+    }
+
+    m_outMin = min;
+    m_outMax = max;
+
+    if (m_isEnabled) {
+        Clamp(m_output, m_outMin, m_outMax);
+        Clamp(m_iTerm, m_outMin, m_outMax);
+    }
+}
+
+void PID::SetSampleTime(unsigned long val)
+{
+    double ratio = (double) val / (double) m_sampleTime;
+    m_i *= ratio;
+    m_d /= ratio;
+    m_sampleTime = val;
+}
+
+unsigned long PID::GetSampleTime() const
+{
+    return m_sampleTime;
 }
 
 /* SetOutputLimits(...)****************************************************
@@ -120,84 +157,42 @@ void PID::SetSampleTime(int NewSampleTime) {
  *  want to clamp it from 0-125.  who knows.  at any rate, that can all be done
  *  here.
  **************************************************************************/
-void PID::SetOutputLimits(double Min, double Max) {
-	if (Min >= Max)
-		return;
-	outMin = Min;
-	outMax = Max;
-
-	if (inAuto) {
-		if (*myOutput > outMax)
-			*myOutput = outMax;
-		else if (*myOutput < outMin)
-			*myOutput = outMin;
-
-		if (ITerm > outMax)
-			ITerm = outMax;
-		else if (ITerm < outMin)
-			ITerm = outMin;
-	}
-}
-
-/* SetMode(...)****************************************************************
- * Allows the controller Mode to be set to manual (0) or Automatic (non-zero)
- * when the transition from manual to auto occurs, the controller is
- * automatically initialized
- ******************************************************************************/
-void PID::SetMode(int Mode) {
-	bool newAuto = (Mode == AUTOMATIC);
-	if (newAuto && !inAuto) { /*we just went from manual to auto*/
-		PID::Initialize();
-	}
-	inAuto = newAuto;
-}
-
 /* Initialize()****************************************************************
  *	does all the things that need to happen to ensure a bumpless transfer
  *  from manual to automatic mode.
  ******************************************************************************/
-void PID::Initialize() {
-	ITerm = *myOutput;
-	lastInput = *myInput;
-	if (ITerm > outMax)
-		ITerm = outMax;
-	else if (ITerm < outMin)
-		ITerm = outMin;
-}
-
-/* SetControllerDirection(...)*************************************************
- * The PID will either be connected to a DIRECT acting process (+Output leads 
- * to +Input) or a REVERSE acting process(+Output leads to -Input.)  we need to
- * know which one, because otherwise we may increase the output when we should
- * be decreasing.  This is called from the constructor.
- ******************************************************************************/
-void PID::SetControllerDirection(int Direction) {
-	if (inAuto && Direction != controllerDirection) {
-		kp = (0 - kp);
-		ki = (0 - ki);
-		kd = (0 - kd);
-	}
-	controllerDirection = Direction;
-}
-
 /* Status Funcions*************************************************************
  * Just because you set the Kp=-1 doesn't mean it actually happened.  these
- * functions query the internal state of the PID.  they're here for display 
+ * functions query the internal state of the PID.  they're here for display
  * purposes.  this are the functions the PID Front-end uses for example
  ******************************************************************************/
-double PID::GetKp() {
-	return dispKp;
-}
-double PID::GetKi() {
-	return dispKi;
-}
-double PID::GetKd() {
-	return dispKd;
-}
-int PID::GetMode() {
-	return inAuto ? AUTOMATIC : MANUAL;
-}
-int PID::GetDirection() {
-	return controllerDirection;
+double PID::GetP() const
+{
+    return m_dispP;
 }
 
+double PID::GetI() const
+{
+    return m_dispI;
+}
+
+double PID::GetD() const
+{
+    return m_dispD;
+}
+
+void PID::Initialize()
+{
+    m_iTerm = m_output;
+    m_prevInput = m_input;
+    Clamp(m_iTerm, m_outMin, m_outMax);
+}
+
+void PID::Clamp(double& val, double min, double max)
+{
+    if (val > max) {
+        val = max;
+    } else if (val < min) {
+        val = min;
+    }
+}
